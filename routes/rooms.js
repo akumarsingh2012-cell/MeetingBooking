@@ -21,7 +21,7 @@ router.get('/:id/availability', auth, (req, res) => {
   if (!room) return res.status(404).json({ error: 'Room not found' });
 
   const bookings = db.prepare(`
-    SELECT start_time, end_time FROM bookings
+    SELECT start_time, end_time, status, meeting_type FROM bookings
     WHERE room_id = ? AND date = ? AND status NOT IN ('cancelled','rejected')
   `).all(req.params.id, date);
 
@@ -29,8 +29,18 @@ router.get('/:id/availability', auth, (req, res) => {
   for (let h = 9; h < 20; h++) {
     const s = pad(h) + ':00';
     const e = pad(h + 1) + ':00';
-    const busy = bookings.some(b => t2m(b.start_time) < t2m(e) && t2m(b.end_time) > t2m(s));
-    slots.push({ start: s, end: e, free: !busy });
+    // A slot is busy only if there is an APPROVED booking overlapping it.
+    // Pending external bookings do not block — they are waiting for admin approval.
+    const busy = bookings.some(b =>
+      b.status === 'approved' &&
+      t2m(b.start_time) < t2m(e) && t2m(b.end_time) > t2m(s)
+    );
+    // Count how many pending requests exist for this slot (for info display)
+    const pendingCount = bookings.filter(b =>
+      b.status === 'pending' &&
+      t2m(b.start_time) < t2m(e) && t2m(b.end_time) > t2m(s)
+    ).length;
+    slots.push({ start: s, end: e, free: !busy, pending_requests: pendingCount });
   }
 
   res.json({ slots, bookings });

@@ -26,10 +26,13 @@ function validate({ room_id, date, start_time, end_time, persons, exclude_id }) 
   if (em - sm > room.max_dur) return `Exceeds max ${room.max_dur / 60}h for this room.`;
   if (persons && +persons > room.capacity) return `Exceeds room capacity (${room.capacity}).`;
 
-  // Conflict check
+  // Conflict check:
+  // Only APPROVED bookings block a slot.
+  // Pending external bookings do NOT block — multiple users can request the same slot;
+  // the slot gets locked only when admin approves one of them.
   let conflictQ = `
     SELECT start_time, end_time FROM bookings
-    WHERE room_id = ? AND date = ? AND status NOT IN ('cancelled','rejected')
+    WHERE room_id = ? AND date = ? AND status = 'approved'
   `;
   const params = [room_id, date];
   if (exclude_id) { conflictQ += ' AND id != ?'; params.push(exclude_id); }
@@ -37,7 +40,7 @@ function validate({ room_id, date, start_time, end_time, persons, exclude_id }) 
   const existing = db.prepare(conflictQ).all(...params);
   for (const b of existing) {
     if (sm < t2m(b.end_time) && em > t2m(b.start_time)) {
-      return `Conflicts with existing booking (${b.start_time}–${b.end_time}).`;
+      return `Conflicts with an approved booking (${b.start_time}–${b.end_time}).`;
     }
   }
 
@@ -164,9 +167,33 @@ router.patch('/:id/approve', auth, adminOnly, (req, res) => {
   if (!b) return res.status(404).json({ error: 'Not found' });
   if (b.status !== 'pending') return res.status(400).json({ error: 'Booking is not pending' });
 
+  // Approve this booking
   db.prepare("UPDATE bookings SET status = 'approved', approved_at = datetime('now') WHERE id = ?").run(req.params.id);
   addNotification(b.user_id, 'Booking Approved', `Your booking for ${b.date} has been approved.`, 'success');
-  res.json({ message: 'Approved' });
+
+  // Auto-reject all other pending bookings for the same room/date that overlap this time slot.
+  // This handles the case where multiple external users requested the same slot — once one is
+  // approved the slot is locked and the rest must be rejected automatically.
+  const conflicting = db.prepare(`
+    SELECT id, user_id FROM bookings
+    WHERE room_id = ? AND date = ? AND status = 'pending' AND id != ?
+  `).all(b.room_id, b.date, b.id);
+
+  const sm = t2m(b.start_time), em = t2m(b.end_time);
+  const autoRejectReason = 'Slot was taken by another approved booking for the same time.';
+
+  conflicting.forEach(c => {
+    // Only reject if time actually overlaps
+    const cb = db.prepare('SELECT start_time, end_time FROM bookings WHERE id = ?').get(c.id);
+    if (t2m(cb.start_time) < em && t2m(cb.end_time) > sm) {
+      db.prepare("UPDATE bookings SET status = 'rejected', rejection_reason = ? WHERE id = ?")
+        .run(autoRejectReason, c.id);
+      addNotification(c.user_id, 'Booking Auto-Rejected',
+        `Another booking was approved for the same time slot on ${b.date}. Please choose a different time.`, 'error');
+    }
+  });
+
+  res.json({ message: 'Approved', auto_rejected: conflicting.length });
 });
 
 // ─── PATCH /api/bookings/:id/reject  (admin only)

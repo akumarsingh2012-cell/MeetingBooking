@@ -574,7 +574,14 @@ async function bkAv() {
     const r = await API.get(`/rooms/${rid}/availability?date=${dt}`);
     const free = r.slots.filter(s => s.free).length;
     let h = `<div style="background:var(--bg);border-radius:8px;padding:10px;"><div style="font-size:.66rem;font-weight:700;color:var(--gray);text-transform:uppercase;margin-bottom:7px;">Availability – ${fd(dt)}</div><div style="display:flex;flex-wrap:wrap;">`;
-    r.slots.forEach(s => { h += s.free ? `<span class="sf" onclick="fillSlot('${s.start}','${s.end}')">${ft(s.start)}</span>` : `<span class="sb2">${ft(s.start)}</span>`; });
+    r.slots.forEach(s => {
+      if (s.free) {
+        const pTag = s.pending_requests > 0 ? ` <span style="font-size:.58rem;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:4px;font-weight:700;">${s.pending_requests} pending</span>` : '';
+        h += `<span class="sf" onclick="fillSlot('${s.start}','${s.end}')" title="${s.pending_requests > 0 ? s.pending_requests + ' pending external request(s) for this slot — still bookable' : 'Available'}">${ft(s.start)}${pTag}</span>`;
+      } else {
+        h += `<span class="sb2">${ft(s.start)}</span>`;
+      }
+    });
     h += `</div><div style="font-size:.68rem;color:var(--gray);margin-top:5px;">${free}/${r.slots.length} free · tap green to auto-fill</div></div>`;
     box.innerHTML = h;
   } catch { box.innerHTML = ''; }
